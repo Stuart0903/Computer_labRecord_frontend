@@ -24,4 +24,5 @@ export const ATTENDANCE_COLORS: Record<string, string> = {
   'Forgot Book': 'bg-amber-100 text-amber-800',
 };
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+export const API_BASE = process.env.BACKEND_URL || '/api';
+console.log(API_BASE)
