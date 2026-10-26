@@ -146,7 +146,8 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   PRINT STYLES — Compact, precise, no fluff
+   PRINT STYLES — Student Lab Record Report (A4 portrait)
+   Only the print-area is shown; everything else is hidden.
    ═══════════════════════════════════════════════════════════════ */
 
 @media print {
@@ -172,11 +173,17 @@
 
   /* Hide interactive elements */
   .no-print,
-  button,
-  select,
-  input[type="number"],
   .no-print * {
     display: none !important;
+  }
+
+  /* Reveal print-only blocks (hidden on screen via inline display:none) */
+  .print-only-block,
+  .print-only-inline {
+    display: block !important;
+  }
+  .print-only-inline {
+    display: inline-flex !important;
   }
 
   /* Page setup */
@@ -193,121 +200,271 @@
     print-color-adjust: exact;
   }
 
-  /* Compact cards */
-  .print-area .rounded-xl,
-  .print-area .rounded-lg,
-  .print-area .rounded-2xl,
-  .print-area [class*="Card"] {
-    border: 1px solid #e2e8f0 !important;
-    border-radius: 4px !important;
-    box-shadow: none !important;
-    background: white !important;
-    margin-bottom: 8px !important;
-    padding: 8px !important;
+  /* ----- HEADER / LETTERHEAD ----- */
+  .doc-header {
+    display: flex !important;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2.5px solid #1e293b;
+    padding-bottom: 8px;
+    margin-bottom: 14px;
+  }
+  .doc-header .school {
+    display: flex !important;
+    gap: 12px;
+    align-items: center;
+  }
+  .doc-header .logo-box {
+    width: 42px;
+    height: 42px;
+    border: 2px solid #1e293b;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 16pt;
+    color: #1e293b;
+  }
+  .doc-header .school-text h1 {
+    margin: 0;
+    font-size: 14pt;
+    font-weight: 700;
+    color: #1e293b;
+    letter-spacing: 0.3px;
+  }
+  .doc-header .school-text p {
+    margin: 1px 0 0;
+    font-size: 8.5pt;
+    color: #64748b;
+  }
+  .doc-header .meta {
+    text-align: right;
+    font-size: 8.5pt;
+    color: #475569;
+    line-height: 1.5;
+  }
+  .doc-header .meta .ref {
+    font-weight: 600;
+    color: #1e293b;
   }
 
-  .print-area [class*="CardContent"] {
-    padding: 6px 8px !important;
+  .doc-title {
+    text-align: center;
+    margin: 4px 0 14px;
+  }
+  .doc-title .label {
+    display: inline-block;
+    background: #1e293b;
+    color: white;
+    font-size: 8pt;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+  .doc-title h2 {
+    margin: 6px 0 0;
+    font-size: 13pt;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .doc-title p {
+    margin: 2px 0 0;
+    font-size: 9pt;
+    color: #64748b;
   }
 
-  .print-area [class*="CardHeader"] {
-    padding: 6px 8px !important;
-    margin-bottom: 0 !important;
+  /* ----- STUDENT INFO CARD ----- */
+  .info-section {
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .info-section .section-head {
+    background: #f1f5f9;
+    padding: 6px 10px;
+    font-size: 9pt;
+    font-weight: 700;
+    color: #1e293b;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid #cbd5e1;
+  }
+  .info-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+  .info-grid .field {
+    padding: 6px 10px;
+    border-right: 1px solid #e2e8f0;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .info-grid .field:nth-child(3n) { border-right: none; }
+  .info-grid .field:nth-last-child(-n+3) { border-bottom: none; }
+  .info-grid .field .k {
+    font-size: 7.5pt;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 1px;
+  }
+  .info-grid .field .v {
+    font-size: 10pt;
+    font-weight: 600;
+    color: #0f172a;
   }
 
-  /* Compact table */
-  .print-area table {
+  /* ----- SUMMARY STRIP ----- */
+  .summary-strip {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .summary-card {
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    padding: 8px 10px;
+    background: #f8fafc;
+    text-align: center;
+  }
+  .summary-card .num {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #1e293b;
+    line-height: 1;
+  }
+  .summary-card .num.att { color: #047857; }
+  .summary-card .num.avg { color: #1d4ed8; }
+  .summary-card .lbl {
+    font-size: 8pt;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 4px;
+  }
+
+  /* ----- RECORDS TABLE ----- */
+  .table-wrap { margin-bottom: 18px; }
+  .table-section-head {
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-bottom: none;
+    padding: 6px 10px;
+    font-size: 9pt;
+    font-weight: 700;
+    color: #1e293b;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-radius: 4px 4px 0 0;
+  }
+
+  .print-area table.records-table {
     font-size: 9pt;
     border-collapse: collapse;
     width: 100%;
+    border: 1px solid #cbd5e1;
+    page-break-inside: auto;
   }
-
-  .print-area thead tr {
-    border-bottom: 2px solid #334155 !important;
-    background: none !important;
+  .print-area table.records-table thead {
+    display: table-header-group;
   }
-
-  .print-area tbody tr {
-    border-bottom: 1px solid #e2e8f0 !important;
+  .print-area table.records-table thead tr {
+    background: #1e293b !important;
+    border-bottom: 2px solid #1e293b !important;
   }
-
-  .print-area th {
-    padding: 4px 6px !important;
-    font-weight: 600;
-    color: #334155;
+  .print-area table.records-table thead th {
+    background: #1e293b !important;
+    color: white !important;
     font-size: 8pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 6px 6px !important;
+    text-align: left;
+    border-right: 1px solid #334155;
   }
-
-  .print-area td {
-    padding: 3px 6px !important;
+  .print-area table.records-table thead th:last-child { border-right: none; }
+  .print-area table.records-table tbody tr {
+    border-top: 1px solid #e2e8f0;
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  .print-area table.records-table tbody tr:nth-child(even) {
+    background: #f8fafc !important;
+  }
+  .print-area table.records-table tbody td {
+    padding: 5px 6px !important;
+    vertical-align: top;
+    color: #1e293b;
     font-size: 9pt;
   }
+  .print-area table.records-table td.idx { color: #64748b; font-size: 8pt; }
+  .print-area table.records-table td.topic .topic-main { font-weight: 600; }
+  .print-area table.records-table td.topic .topic-sub {
+    font-size: 7.5pt;
+    color: #64748b;
+    margin-top: 1px;
+    font-style: italic;
+  }
 
-  /* Compact badges */
-  .print-area [class*="Badge"] {
-    font-size: 7pt !important;
-    padding: 1px 4px !important;
-    border-radius: 2px !important;
+  /* ----- STATUS DOTS ----- */
+  .print-area .dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 8.5pt;
     font-weight: 600;
+    color: #475569;
   }
+  .print-area .dot::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    display: inline-block;
+  }
+  .print-area .dot.present  { color: #047857; }
+  .print-area .dot.absent   { color: #b91c1c; }
+  .print-area .dot.bunk     { color: #7c3aed; }
+  .print-area .dot.forgot   { color: #b45309; }
+  .print-area .dot.done       { color: #047857; }
+  .print-area .dot.partial    { color: #b45309; }
+  .print-area .dot.notdone    { color: #b91c1c; }
+  .print-area .dot.notstarted { color: #475569; }
+  .print-area .dot.verified { color: #047857; }
+  .print-area .dot.pending   { color: #b45309; }
 
-  /* Compact stat boxes */
-  .print-area [class*="StatBox"],
-  .print-area [class*="StatCard"],
-  .print-area [class*="KPICard"] {
-    border: 1px solid #e2e8f0 !important;
-    border-radius: 4px !important;
-    padding: 6px 8px !important;
-    box-shadow: none !important;
+  /* ----- MATERIALS / MARKS ----- */
+  .print-area .mat-ok   { color: #047857; font-weight: 600; }
+  .print-area .mat-miss { color: #b91c1c; font-weight: 600; }
+
+  /* ----- FOOTER ----- */
+  .doc-footer {
+    display: block !important;
+    margin-top: 28px;
+    border-top: 1px solid #cbd5e1;
+    padding-top: 10px;
+    page-break-inside: avoid;
   }
+  .footer-meta {
+    display: flex !important;
+    justify-content: space-between;
+    font-size: 7.5pt;
+    color: #94a3b8;
+  }
+  .footer-meta .left b { color: #475569; }
 
   /* Hide hover states */
   .print-area *:hover {
     background: none !important;
   }
 
-  /* Print header */
-  .print-header {
-    text-align: center;
-    margin-bottom: 10px;
-    padding-bottom: 8px;
-    border-bottom: 2px solid #1e293b;
-  }
-
-  .print-header h1 {
-    font-size: 14pt;
-    font-weight: 700;
-    margin: 0 0 2px 0;
-    color: #1e293b;
-  }
-
-  .print-header p {
-    font-size: 9pt;
-    margin: 0;
-    color: #64748b;
-  }
-
-  /* Print footer */
-  .print-footer {
-    margin-top: 10px;
-    padding-top: 6px;
-    border-top: 1px solid #cbd5e1;
-    font-size: 8pt;
-    color: #94a3b8;
-    text-align: center;
-  }
-
-  /* Compact progress bars */
-  .print-area [class*="bg-slate-100"] {
-    background: #f1f5f9 !important;
-  }
-
   /* Page break control */
-  .page-break-before {
-    page-break-before: always;
-  }
-
-  .no-page-break {
-    page-break-inside: avoid;
-  }
+  .page-break-before { page-break-before: always; }
+  .no-page-break { page-break-inside: avoid; }
 }
