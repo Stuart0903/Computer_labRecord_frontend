@@ -14,11 +14,13 @@ interface ApiError {
 export class FetchError extends Error {
   status: number;
   details?: unknown;
+  retryAfterSec?: number;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(status: number, message: string, details?: unknown, retryAfterSec?: number) {
     super(message);
     this.status = status;
     this.details = details;
+    this.retryAfterSec = retryAfterSec;
   }
 }
 
@@ -42,7 +44,21 @@ export async function api<T>(endpoint: string, options: ApiOptions = {}): Promis
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({ error: 'Request failed' }));
-    throw new FetchError(response.status, data.error || 'Request failed', data.details);
+    // Capture Retry-After header / retryAfterSec field — set by the backend
+    // rate limiters when status === 429.
+    const retryAfterHeader = response.headers.get('Retry-After');
+    const retryAfterSec =
+      retryAfterHeader != null
+        ? Number(retryAfterHeader)
+        : typeof data.retryAfterSec === 'number'
+          ? data.retryAfterSec
+          : undefined;
+    throw new FetchError(
+      response.status,
+      data.error || 'Request failed',
+      data.details,
+      Number.isFinite(retryAfterSec) ? retryAfterSec : undefined,
+    );
   }
 
   // Handle 204 No Content

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api, FetchError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,14 +36,45 @@ const VERIFIED_DOT: Record<string, string> = {
   Pending: 'pending',
 };
 
+// Format milliseconds as M:SS or MM:SS for the lockout countdown UI.
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.ceil(ms / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 export default function LookupPage() {
   const [studentId, setStudentId] = useState('');
   const [result, setResult] = useState<ParentLookupResult | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // ----- Server-driven lockout state -----
+  // When the backend returns 429, we lock the form for the number of
+  // seconds the backend tells us (Retry-After header). This is the
+  // single source of truth — no client-side rate limiting is enforced.
+  const [lockedUntil, setLockedUntil] = useState(0); // epoch ms, 0 = unlocked
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    // Tick once per second so the countdown UI updates.
+    tickRef.current = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => {
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
+  }, []);
+
+  const remainingMs = Math.max(0, lockedUntil - Date.now());
+  const isLocked = remainingMs > 0;
+
   async function handleLookup(e: React.FormEvent) {
     e.preventDefault();
+
+    // Defensive: refuse to submit while locally locked (server-driven).
+    if (isLocked) return;
+
     setError('');
     setResult(null);
     setLoading(true);
@@ -56,6 +87,10 @@ export default function LookupPage() {
       setResult(data);
     } catch (err) {
       if (err instanceof FetchError) {
+        // 429 Too Many Requests — start the server-driven countdown.
+        if (err.status === 429 && err.retryAfterSec) {
+          setLockedUntil(Date.now() + err.retryAfterSec * 1000);
+        }
         setError(err.message);
       } else {
         setError('Something went wrong');
@@ -95,22 +130,36 @@ export default function LookupPage() {
                   onChange={(e) => setStudentId(e.target.value)}
                   placeholder="e.g. 6A01"
                   required
-                  disabled={loading}
+                  disabled={loading || isLocked}
                   className="mt-1.5"
                 />
               </div>
-              <Button type="submit" disabled={loading}>
-                {loading ? 'Searching...' : (
+              <Button type="submit" disabled={loading || isLocked}>
+                {loading ? 'Searching...' : isLocked ? (
+                  <>Locked · {formatCountdown(remainingMs)}</>
+                ) : (
                   <>
                     <Search className="mr-2 h-4 w-4" /> Look Up
                   </>
                 )}
               </Button>
             </form>
+
+            {/* Server-driven lockout feedback */}
+            {isLocked && (
+              <div className="mt-4 rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-800">
+                <p className="font-semibold">
+                  Too many attempts. Please wait {formatCountdown(remainingMs)} before trying again.
+                </p>
+                <p className="text-xs text-red-600 mt-1">
+                  This lockout is enforced by the server. Refreshing or closing this tab will not bypass it.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {error && (
+        {error && !isLocked && (
           <div className="rounded-md bg-red-50 p-4 text-sm text-red-800 mb-6 no-print">{error}</div>
         )}
 
