@@ -45,7 +45,7 @@ import {
   VERIFIED_COLORS,
   ATTENDANCE_COLORS,
 } from '@/lib/constants';
-import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks'
+import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks';
 import { format } from 'date-fns';
 
 export default function RecordsPage() {
@@ -215,6 +215,41 @@ export default function RecordsPage() {
       }
     } else {
       handleUpdateRecord(record.id, 'attendance', newAttendance);
+    }
+  }
+
+  /**
+   * Handle task-status dropdown change.
+   * Cascade: 'Not Completed' or 'Not Done' → marks = null + verified = 'Pending'.
+   * Other statuses → plain update (preserve marks and verified).
+   */
+  async function handleTaskStatusChange(record: LabRecord, newStatus: string) {
+    const shouldReset = newStatus === 'Not Completed' || newStatus === 'Not Done';
+
+    if (shouldReset) {
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === record.id
+            ? { ...r, taskStatus: newStatus, marks: null, verified: 'Pending' }
+            : r
+        )
+      );
+      try {
+        const updated = await api<LabRecord>(`/records/${record.id}`, {
+          method: 'PATCH',
+          body: {
+            taskStatus: newStatus,
+            marks: null,
+            verified: 'Pending',
+          },
+        });
+        setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+      } catch (err) {
+        toast.error('Failed to save');
+        loadRecords();
+      }
+    } else {
+      handleUpdateRecord(record.id, 'taskStatus', newStatus);
     }
   }
 
@@ -473,9 +508,7 @@ export default function RecordsPage() {
 
                       {/* Attendance */}
                       <td className="p-3">
-                        <Select value={record.attendance} onValueChange={(val) => {
-                          if (val !== null) handleAttendanceChange(record, val);
-                        }}>
+                        <Select value={record.attendance} onValueChange={(val) => { if (val !== null) handleAttendanceChange(record, val); }}>
                           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {ATTENDANCE_STATUSES.map((s) => (
@@ -489,7 +522,7 @@ export default function RecordsPage() {
 
                       {/* Task */}
                       <td className="p-3">
-                        <Select value={record.taskStatus} onValueChange={(val) => handleUpdateRecord(record.id, 'taskStatus', val)}>
+                        <Select value={record.taskStatus} onValueChange={(val) => { if (val !== null) handleTaskStatusChange(record, val); }}>
                           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {TASK_STATUSES.map((s) => (

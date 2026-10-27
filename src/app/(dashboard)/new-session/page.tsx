@@ -23,6 +23,12 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'react-hot-toast';
 import {
   PlusCircle,
@@ -33,6 +39,8 @@ import {
   Clock,
   UserCheck,
   Package,
+  XCircle,
+  Power,
 } from 'lucide-react';
 import type { LabSession, LabRecord } from '@/lib/types';
 import {
@@ -46,6 +54,7 @@ import {
   ATTENDANCE_COLORS,
 } from '@/lib/constants';
 import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks';
+import { useActiveSession } from '@/lib/use-active-session';
 import { format } from 'date-fns';
 
 export default function NewSessionPage() {
@@ -59,16 +68,31 @@ export default function NewSessionPage() {
   const [materialsRequired, setMaterialsRequired] = useState('');
   const [creating, setCreating] = useState(false);
 
-  // Session state
-  const [session, setSession] = useState<LabSession | null>(null);
-  const [records, setRecords] = useState<LabRecord[]>([]);
+  // Session state — persisted via useActiveSession hook so navigating away
+  // and coming back restores the running session automatically.
+  const {
+    session,
+    records,
+    setRecords,
+    activate,
+    end: endSession,
+    refreshRecords,
+    restoring,
+  } = useActiveSession();
   const [maxMarksInput, setMaxMarksInput] = useState<string>('10');
 
-  // Bulk dialog
+  // Bulk dialog (existing — applies to ALL students in session)
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkField, setBulkField] = useState<'taskStatus' | 'verified' | 'attendance'>('taskStatus');
   const [bulkValue, setBulkValue] = useState('');
   const [bulkLoading, setBulkLoading] = useState(false);
+
+  // Roll-number multi-select for targeted bulk updates
+  const [selectedRolls, setSelectedRolls] = useState<Set<number>>(new Set());
+  const [rollBulkOpen, setRollBulkOpen] = useState(false);
+  const [rollBulkField, setRollBulkField] = useState<'taskStatus' | 'verified' | 'attendance'>('taskStatus');
+  const [rollBulkValue, setRollBulkValue] = useState('');
+  const [rollBulkLoading, setRollBulkLoading] = useState(false);
 
   const isFormValid = selectedClass && selectedSection && topic && date;
 
@@ -93,8 +117,7 @@ export default function NewSessionPage() {
           materialsRequired: materialsRequired || undefined,
         },
       });
-      setSession(data);
-      setRecords(data.labRecords || []);
+      activate(data);
       toast.success(`Session created with ${data.labRecords?.length || 0} student records`);
     } catch (err) {
       toast.error('Failed to create session');
@@ -123,10 +146,7 @@ export default function NewSessionPage() {
       );
     } catch (err) {
       toast.error('Failed to save');
-      if (session) {
-        const freshSession = await api<LabSession>(`/sessions/${session.id}`);
-        setRecords(freshSession.labRecords || []);
-      }
+      refreshRecords();
     }
   }
 
@@ -145,7 +165,7 @@ export default function NewSessionPage() {
       newVerified === 'Verified' &&
       record.marks === null &&
       record.maxMarks &&
-      !isAbsentStatus(record.attendance ?? '')
+      !isAbsentStatus(record.attendance)
     ) {
       newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
     }
@@ -178,10 +198,7 @@ export default function NewSessionPage() {
       }
     } catch (err) {
       toast.error('Failed to save');
-      if (session) {
-        const freshSession = await api<LabSession>(`/sessions/${session.id}`);
-        setRecords(freshSession.labRecords || []);
-      }
+      refreshRecords();
     }
   }
 
@@ -212,14 +229,52 @@ export default function NewSessionPage() {
         setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
       } catch (err) {
         toast.error('Failed to save');
-        if (session) {
-          const freshSession = await api<LabSession>(`/sessions/${session.id}`);
-          setRecords(freshSession.labRecords || []);
-        }
+        refreshRecords();
       }
     } else {
       // Plain attendance change — no cascade.
       handleUpdateRecord(record.id, 'attendance', newAttendance);
+    }
+  }
+
+  /**
+   * Handle task-status dropdown change.
+   * Cascade rules (per teacher's spec):
+   *   - 'Not Completed' or 'Not Done' → marks = null + verified = 'Pending'
+   *     (these students did not successfully complete the task, so any
+   *      previously-assigned marks and verified flag are reset)
+   *   - 'Completed' or 'Partially Completed' → no cascade (preserve marks
+   *     and verified). Teacher must explicitly click Verify to auto-fill marks.
+   */
+  async function handleTaskStatusChange(record: LabRecord, newStatus: string) {
+    const shouldReset = newStatus === 'Not Completed' || newStatus === 'Not Done';
+
+    if (shouldReset) {
+      // Cascade: marks → null, verified → Pending, taskStatus → newStatus
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === record.id
+            ? { ...r, taskStatus: newStatus, marks: null, verified: 'Pending' }
+            : r
+        )
+      );
+      try {
+        const updated = await api<LabRecord>(`/records/${record.id}`, {
+          method: 'PATCH',
+          body: {
+            taskStatus: newStatus,
+            marks: null,
+            verified: 'Pending',
+          },
+        });
+        setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+      } catch (err) {
+        toast.error('Failed to save');
+        refreshRecords();
+      }
+    } else {
+      // Plain task-status change — no cascade.
+      handleUpdateRecord(record.id, 'taskStatus', newStatus);
     }
   }
 
@@ -240,14 +295,39 @@ export default function NewSessionPage() {
           [bulkField]: bulkValue,
         },
       });
-      const freshSession = await api<LabSession>(`/sessions/${session.id}`);
-      setRecords(freshSession.labRecords || []);
+      await refreshRecords();
       toast.success('All records updated');
       setBulkDialogOpen(false);
     } catch (err) {
       toast.error('Bulk update failed');
     } finally {
       setBulkLoading(false);
+    }
+  }
+
+  /**
+   * Bulk update only the selected roll numbers (within the active session).
+   * Uses PUT /records with `ids` — only those records get updated.
+   */
+  async function handleRollBulkUpdate() {
+    if (!session || selectedRolls.size === 0 || !rollBulkValue) return;
+    setRollBulkLoading(true);
+    try {
+      const ids = records
+        .filter((r) => selectedRolls.has(r.rollNo))
+        .map((r) => r.id);
+      await api<{ updated: number }>('/records', {
+        method: 'PUT',
+        body: { ids, [rollBulkField]: rollBulkValue },
+      });
+      await refreshRecords();
+      toast.success(`Updated ${ids.length} records`);
+      setRollBulkOpen(false);
+      setSelectedRolls(new Set());
+    } catch (err) {
+      toast.error('Bulk update failed');
+    } finally {
+      setRollBulkLoading(false);
     }
   }
 
@@ -276,8 +356,10 @@ export default function NewSessionPage() {
   }
 
   function handleNewSession() {
-    setSession(null);
-    setRecords([]);
+    // "End Session" — clears the persisted active session so the form
+    // is shown again. The session itself remains in the database; the
+    // teacher can find it later on the /records page.
+    endSession();
     setSelectedClass('');
     setSelectedSection('');
     setTopic('');
@@ -285,9 +367,18 @@ export default function NewSessionPage() {
     setLearned('');
     setMaterialsRequired('');
     setDate(format(new Date(), 'yyyy-MM-dd'));
+    setSelectedRolls(new Set());
   }
 
   // ─── RENDER ──────────────────────────────────────────────────
+
+  if (restoring) {
+    return (
+      <div className="flex justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
 
   if (session) {
     const completedCount = records.filter((r) => r.taskStatus === 'Completed').length;
@@ -316,11 +407,19 @@ export default function NewSessionPage() {
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => setBulkDialogOpen(true)}>
               <Save className="mr-2 h-4 w-4" />
-              Bulk Update
+              Bulk Update All
             </Button>
-            <Button variant="outline" size="sm" onClick={handleNewSession}>
-              <PlusCircle className="mr-2 h-4 w-4" />
-              New Session
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (window.confirm('End this session? You can find it later under Records.')) {
+                  handleNewSession();
+                }
+              }}
+            >
+              <Power className="mr-2 h-4 w-4" />
+              End Session
             </Button>
           </div>
         </div>
@@ -349,6 +448,136 @@ export default function NewSessionPage() {
             {verifiedCount} Verified
           </Badge>
         </div>
+
+        {/* Roll-Number Multi-Select + Targeted Bulk Update */}
+        <Card>
+          <CardContent className="py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <Label className="text-sm whitespace-nowrap font-semibold">Selected rolls:</Label>
+              <span className="text-sm font-medium text-blue-700">
+                {selectedRolls.size === 0
+                  ? 'None'
+                  : `${selectedRolls.size} selected`}
+              </span>
+
+              {/* Popover to pick roll numbers */}
+              <Popover>
+                <PopoverTrigger className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50">
+                  Select Roll Numbers
+                </PopoverTrigger>
+                <PopoverContent className="w-72 p-3" align="start">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-slate-700">Pick roll numbers</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs px-2"
+                      onClick={() => setSelectedRolls(new Set())}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                  {/* Quick-select buttons */}
+                  <div className="flex flex-wrap gap-1 mb-2 pb-2 border-b">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => setSelectedRolls(new Set(records.map((r) => r.rollNo)))}
+                    >
+                      All
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() =>
+                        setSelectedRolls(
+                          new Set(records.filter((r) => r.attendance === 'Present').map((r) => r.rollNo))
+                        )
+                      }
+                    >
+                      Present only
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() =>
+                        setSelectedRolls(
+                          new Set(
+                            records.filter((r) => r.taskStatus === 'Not Completed' || r.taskStatus === 'Not Done').map((r) => r.rollNo)
+                          )
+                        )
+                      }
+                    >
+                      Incomplete
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() =>
+                        setSelectedRolls(
+                          new Set(records.filter((r) => r.verified === 'Pending').map((r) => r.rollNo))
+                        )
+                      }
+                    >
+                      Unverified
+                    </Button>
+                  </div>
+                  {/* Individual checkboxes per roll number */}
+                  <div className="grid grid-cols-5 gap-1 max-h-48 overflow-y-auto">
+                    {records.map((r) => (
+                      <label
+                        key={r.id}
+                        className={`flex items-center gap-1 px-1.5 py-1 rounded text-xs cursor-pointer ${
+                          selectedRolls.has(r.rollNo)
+                            ? 'bg-blue-50 text-blue-700 font-medium'
+                            : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <Checkbox
+                          checked={selectedRolls.has(r.rollNo)}
+                          onCheckedChange={(checked) => {
+                            setSelectedRolls((prev) => {
+                              const next = new Set(prev);
+                              if (checked) next.add(r.rollNo);
+                              else next.delete(r.rollNo);
+                              return next;
+                            });
+                          }}
+                        />
+                        <span>{r.rollNo}</span>
+                      </label>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              {/* If some are selected, show a "Bulk Update Selected" button */}
+              {selectedRolls.size > 0 && (
+                <Button variant="outline" size="sm" onClick={() => setRollBulkOpen(true)}>
+                  <Save className="mr-2 h-4 w-4" />
+                  Bulk Update {selectedRolls.size} Selected
+                </Button>
+              )}
+
+              {/* Clear-selection shortcut */}
+              {selectedRolls.size > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7"
+                  onClick={() => setSelectedRolls(new Set())}
+                >
+                  <XCircle className="mr-1 h-3.5 w-3.5" />
+                  Clear
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Max Marks Setter */}
         <Card>
@@ -393,7 +622,7 @@ export default function NewSessionPage() {
                   {records.map((record) => (
                     <tr
                       key={record.id}
-                      className={`border-b last:border-0 ${rowClassForStatus(record.taskStatus, record.attendance ?? '')}`}
+                      className={`border-b last:border-0 ${rowClassForStatus(record.taskStatus, record.attendance)}`}
                     >
                       <td className="p-3 font-medium text-slate-700">{record.rollNo}</td>
                       <td className="p-3">
@@ -424,7 +653,9 @@ export default function NewSessionPage() {
                       <td className="p-3">
                         <Select
                           value={record.taskStatus}
-                          onValueChange={(val) => handleUpdateRecord(record.id, 'taskStatus', val)}
+                          onValueChange={(val) => {
+                            if (val !== null) handleTaskStatusChange(record, val);
+                          }}
                         >
                           <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -561,6 +792,54 @@ export default function NewSessionPage() {
               <Button onClick={handleBulkUpdate} disabled={!bulkValue || bulkLoading}>
                 {bulkLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Apply to All
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Roll-number-targeted bulk update dialog */}
+        <Dialog open={rollBulkOpen} onOpenChange={setRollBulkOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Update {selectedRolls.size} Selected Students</DialogTitle>
+              <DialogDescription>
+                Applies to roll numbers: {Array.from(selectedRolls).sort((a, b) => a - b).join(', ')}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div>
+                <Label>Field</Label>
+                <Select value={rollBulkField} onValueChange={(val: any) => { setRollBulkField(val); setRollBulkValue(''); }}>
+                  <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="attendance">Attendance</SelectItem>
+                    <SelectItem value="taskStatus">Task Status</SelectItem>
+                    <SelectItem value="verified">Verified</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Value</Label>
+                <Select value={rollBulkValue} onValueChange={(val) => setRollBulkValue(val ?? '')}>
+                  <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select value" /></SelectTrigger>
+                  <SelectContent>
+                    {(rollBulkField === 'attendance'
+                      ? ATTENDANCE_STATUSES
+                      : rollBulkField === 'taskStatus'
+                      ? TASK_STATUSES
+                      : VERIFIED_STATUSES
+                    ).map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRollBulkOpen(false)}>Cancel</Button>
+              <Button onClick={handleRollBulkUpdate} disabled={!rollBulkValue || rollBulkLoading}>
+                {rollBulkLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Update {selectedRolls.size} Students
               </Button>
             </DialogFooter>
           </DialogContent>
