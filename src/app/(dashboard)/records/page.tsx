@@ -45,6 +45,7 @@ import {
   VERIFIED_COLORS,
   ATTENDANCE_COLORS,
 } from '@/lib/constants';
+import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks'
 import { format } from 'date-fns';
 
 export default function RecordsPage() {
@@ -130,6 +131,90 @@ export default function RecordsPage() {
     } catch (err) {
       toast.error('Failed to save');
       loadRecords();
+    }
+  }
+
+  /**
+   * Handle the Verify button click. Toggles Verified ↔ Pending.
+   * When transitioning TO Verified, also auto-fill marks if:
+   *   - the student is NOT absent (absent students are not graded)
+   *   - marks is currently null (preserve manual edits)
+   *   - maxMarks is set
+   */
+  async function handleVerify(record: LabRecord) {
+    const newVerified = record.verified === 'Verified' ? 'Pending' : 'Verified';
+
+    let newMarks = record.marks;
+    if (
+      newVerified === 'Verified' &&
+      record.marks === null &&
+      record.maxMarks &&
+      !isAbsentStatus(record.attendance)
+    ) {
+      newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
+    }
+
+    setRecords((prev) =>
+      prev.map((r) =>
+        r.id === record.id
+          ? {
+              ...r,
+              verified: newVerified,
+              ...(newMarks !== record.marks ? { marks: newMarks } : {}),
+            }
+          : r
+      )
+    );
+
+    try {
+      const patchBody: Record<string, unknown> = { verified: newVerified };
+      if (newMarks !== record.marks) patchBody.marks = newMarks;
+
+      const updated = await api<LabRecord>(`/records/${record.id}`, {
+        method: 'PATCH',
+        body: patchBody,
+      });
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+
+      if (newVerified === 'Verified' && newMarks !== record.marks && newMarks !== null) {
+        toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
+      }
+    } catch (err) {
+      toast.error('Failed to save');
+      loadRecords();
+    }
+  }
+
+  /**
+   * Handle attendance dropdown change.
+   * When marking Absent or Bunk, also cascade: taskStatus → 'Not Done',
+   * marks → null. Otherwise just update attendance.
+   */
+  async function handleAttendanceChange(record: LabRecord, newAttendance: string) {
+    if (isAbsentStatus(newAttendance)) {
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === record.id
+            ? { ...r, attendance: newAttendance, taskStatus: 'Not Done', marks: null }
+            : r
+        )
+      );
+      try {
+        const updated = await api<LabRecord>(`/records/${record.id}`, {
+          method: 'PATCH',
+          body: {
+            attendance: newAttendance,
+            taskStatus: 'Not Done',
+            marks: null,
+          },
+        });
+        setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+      } catch (err) {
+        toast.error('Failed to save');
+        loadRecords();
+      }
+    } else {
+      handleUpdateRecord(record.id, 'attendance', newAttendance);
     }
   }
 
@@ -367,7 +452,10 @@ export default function RecordsPage() {
                 </thead>
                 <tbody>
                   {records.map((record) => (
-                    <tr key={record.id} className="border-b last:border-0 hover:bg-slate-50/50">
+                    <tr
+                      key={record.id}
+                      className={`border-b last:border-0 ${rowClassForStatus(record.taskStatus, record.attendance)}`}
+                    >
                       <td className="p-3">
                         <Checkbox checked={selectedIds.has(record.id)} onCheckedChange={() => toggleSelect(record.id)} />
                       </td>
@@ -385,7 +473,9 @@ export default function RecordsPage() {
 
                       {/* Attendance */}
                       <td className="p-3">
-                        <Select value={record.attendance} onValueChange={(val) => handleUpdateRecord(record.id, 'attendance', val)}>
+                        <Select value={record.attendance} onValueChange={(val) => {
+                          if (val !== null) handleAttendanceChange(record, val);
+                        }}>
                           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {ATTENDANCE_STATUSES.map((s) => (
@@ -463,9 +553,8 @@ export default function RecordsPage() {
                           variant="ghost"
                           size="sm"
                           className={`h-7 text-xs px-1 ${record.verified === 'Verified' ? 'text-emerald-700' : 'text-amber-700'}`}
-                          onClick={() =>
-                            handleUpdateRecord(record.id, 'verified', record.verified === 'Verified' ? 'Pending' : 'Verified')
-                          }
+                          onClick={() => handleVerify(record)}
+                          title={record.verified === 'Pending' ? 'Verify (auto-fills marks if empty)' : 'Unverify'}
                         >
                           {record.verified === 'Verified' ? (
                             <><ShieldCheck className="mr-1 h-3 w-3" />V</>

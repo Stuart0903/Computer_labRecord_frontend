@@ -45,6 +45,7 @@ import {
   VERIFIED_COLORS,
   ATTENDANCE_COLORS,
 } from '@/lib/constants';
+import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks';
 import { format } from 'date-fns';
 
 export default function NewSessionPage() {
@@ -126,6 +127,99 @@ export default function NewSessionPage() {
         const freshSession = await api<LabSession>(`/sessions/${session.id}`);
         setRecords(freshSession.labRecords || []);
       }
+    }
+  }
+
+  /**
+   * Handle the Verify button click. Toggles Verified ↔ Pending.
+   * When transitioning TO Verified, also auto-fill marks if:
+   *   - the student is NOT absent (absent students are not graded)
+   *   - marks is currently null (preserve manual edits)
+   *   - maxMarks is set
+   */
+  async function handleVerify(record: LabRecord) {
+    const newVerified = record.verified === 'Verified' ? 'Pending' : 'Verified';
+
+    let newMarks = record.marks;
+    if (
+      newVerified === 'Verified' &&
+      record.marks === null &&
+      record.maxMarks &&
+      !isAbsentStatus(record.attendance ?? '')
+    ) {
+      newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
+    }
+
+    // Optimistic update
+    setRecords((prev) =>
+      prev.map((r) =>
+        r.id === record.id
+          ? {
+              ...r,
+              verified: newVerified,
+              ...(newMarks !== record.marks ? { marks: newMarks } : {}),
+            }
+          : r
+      )
+    );
+
+    try {
+      const patchBody: Record<string, unknown> = { verified: newVerified };
+      if (newMarks !== record.marks) patchBody.marks = newMarks;
+
+      const updated = await api<LabRecord>(`/records/${record.id}`, {
+        method: 'PATCH',
+        body: patchBody,
+      });
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+
+      if (newVerified === 'Verified' && newMarks !== record.marks && newMarks !== null) {
+        toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
+      }
+    } catch (err) {
+      toast.error('Failed to save');
+      if (session) {
+        const freshSession = await api<LabSession>(`/sessions/${session.id}`);
+        setRecords(freshSession.labRecords || []);
+      }
+    }
+  }
+
+  /**
+   * Handle attendance dropdown change.
+   * When marking Absent or Bunk, also cascade: taskStatus → 'Not Done',
+   * marks → null. Otherwise just update attendance.
+   */
+  async function handleAttendanceChange(record: LabRecord, newAttendance: string) {
+    if (isAbsentStatus(newAttendance)) {
+      // Cascade — three fields updated in one PATCH.
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === record.id
+            ? { ...r, attendance: newAttendance, taskStatus: 'Not Done', marks: null }
+            : r
+        )
+      );
+      try {
+        const updated = await api<LabRecord>(`/records/${record.id}`, {
+          method: 'PATCH',
+          body: {
+            attendance: newAttendance,
+            taskStatus: 'Not Done',
+            marks: null,
+          },
+        });
+        setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+      } catch (err) {
+        toast.error('Failed to save');
+        if (session) {
+          const freshSession = await api<LabSession>(`/sessions/${session.id}`);
+          setRecords(freshSession.labRecords || []);
+        }
+      }
+    } else {
+      // Plain attendance change — no cascade.
+      handleUpdateRecord(record.id, 'attendance', newAttendance);
     }
   }
 
@@ -297,7 +391,10 @@ export default function NewSessionPage() {
                 </thead>
                 <tbody>
                   {records.map((record) => (
-                    <tr key={record.id} className="border-b last:border-0 hover:bg-slate-50/50">
+                    <tr
+                      key={record.id}
+                      className={`border-b last:border-0 ${rowClassForStatus(record.taskStatus, record.attendance ?? '')}`}
+                    >
                       <td className="p-3 font-medium text-slate-700">{record.rollNo}</td>
                       <td className="p-3">
                         <Badge variant="outline" className="font-mono text-xs">{record.studentId}</Badge>
@@ -308,7 +405,9 @@ export default function NewSessionPage() {
                       <td className="p-3">
                         <Select
                           value={record.attendance}
-                          onValueChange={(val) => handleUpdateRecord(record.id, 'attendance', val)}
+                          onValueChange={(val) => {
+                            if (val !== null) handleAttendanceChange(record, val);
+                          }}
                         >
                           <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -388,9 +487,8 @@ export default function NewSessionPage() {
                           variant="ghost"
                           size="sm"
                           className={`h-7 text-xs px-2 ${record.verified === 'Verified' ? 'text-emerald-700' : 'text-amber-700'}`}
-                          onClick={() =>
-                            handleUpdateRecord(record.id, 'verified', record.verified === 'Verified' ? 'Pending' : 'Verified')
-                          }
+                          onClick={() => handleVerify(record)}
+                          title={record.verified === 'Pending' ? 'Verify (auto-fills marks if empty)' : 'Unverify'}
                         >
                           {record.verified === 'Verified' ? (
                             <><ShieldCheck className="mr-1 h-3.5 w-3.5" /> V</>
