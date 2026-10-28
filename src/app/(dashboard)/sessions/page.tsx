@@ -35,6 +35,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
+  ClipboardList,
 } from 'lucide-react';
 import type { SessionsWithStatsResult, SessionWithStats } from '@/lib/types';
 import { CLASSES, SECTIONS } from '@/lib/constants';
@@ -369,6 +370,13 @@ export default function SessionsPage() {
                         </td>
                         <td className="p-3">
                           <div className="flex items-center justify-end gap-1">
+                            <Link
+                              href={`/records?sessionId=${session.id}`}
+                              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                              title="View records for this session"
+                            >
+                              <ClipboardList className="h-3.5 w-3.5" />
+                            </Link>
                             <Button
                               variant="ghost"
                               size="sm"

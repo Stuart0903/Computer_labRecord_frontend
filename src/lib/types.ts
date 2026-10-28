@@ -117,6 +117,12 @@ export interface SessionsWithStatsResult {
   total: number;
 }
 
+// Paginated records response — returned by GET /records
+export interface PaginatedRecordsResult {
+  records: LabRecord[];
+  total: number;
+}
+
 // Parent Lookup Result
 export interface ParentLookupResult {
   student: Pick<Student, 'studentId' | 'name' | 'class' | 'section' | 'rollNo'>;

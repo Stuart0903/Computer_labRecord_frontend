@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useMemo, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,6 +16,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import {
   Dialog,
   DialogContent,
@@ -33,8 +39,10 @@ import {
   Clock,
   Filter,
   X,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
-import type { LabRecord, LabSession } from '@/lib/types';
+import type { LabRecord, LabSession, PaginatedRecordsResult } from '@/lib/types';
 import {
   CLASSES,
   SECTIONS,
@@ -48,11 +56,22 @@ import {
 import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks';
 import { format } from 'date-fns';
 
+const PAGE_SIZE = 50;
+
 export default function RecordsPage() {
+  // useSearchParams() must be wrapped in <Suspense> in Next.js 16+.
+  return (
+    <Suspense fallback={<div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-blue-600" /></div>}>
+      <RecordsPageInner />
+    </Suspense>
+  );
+}
+
+function RecordsPageInner() {
   const [records, setRecords] = useState<LabRecord[]>([]);
+  const [total, setTotal] = useState(0);
   const [sessions, setSessions] = useState<LabSession[]>([]);
   const [loading, setLoading] = useState(true);
-  const [totalShown, setTotalShown] = useState(0);
 
   // Filters
   const [filterClass, setFilterClass] = useState<string>('all');
@@ -66,7 +85,15 @@ export default function RecordsPage() {
   const [filterSearch, setFilterSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
 
-  // Selection
+  // Session dropdown search (so teacher can filter the session list inside
+  // the dropdown after class+section cascading has narrowed it)
+  const [sessionSearch, setSessionSearch] = useState('');
+
+  // Pagination — 0-indexed page
+  const [page, setPage] = useState(0);
+
+  // Selection — preserved across pagination. IDs only, so changing pages
+  // doesn't lose your bulk-update selection.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Bulk dialog
@@ -75,24 +102,54 @@ export default function RecordsPage() {
   const [bulkValue, setBulkValue] = useState('');
   const [bulkLoading, setBulkLoading] = useState(false);
 
-  useEffect(() => { loadSessions(); }, []);
-
+  // ─── URL deep-link: ?sessionId=X (used by /sessions page "View Records" button) ──
+  const searchParams = useSearchParams();
   useEffect(() => {
-    loadRecords();
-  }, [filterClass, filterSection, filterSession, filterTask, filterVerified, filterAttendance, filterDateFrom, filterDateTo, filterSearch]);
+    const sessionIdFromUrl = searchParams.get('sessionId');
+    if (sessionIdFromUrl) {
+      setFilterSession(sessionIdFromUrl);
+    }
+  }, [searchParams]);
+
+  // ─── Load sessions for the filter dropdown — cascaded by class+section ──
+  // Only sessions matching the current class/section filters are loaded,
+  // so the dropdown never has hundreds of items.
+  useEffect(() => {
+    loadSessions();
+  }, [filterClass, filterSection]);
 
   async function loadSessions() {
     try {
-      const data = await api<LabSession[]>('/sessions');
+      const params = new URLSearchParams();
+      if (filterClass !== 'all') params.set('class', filterClass);
+      if (filterSection !== 'all') params.set('section', filterSection);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      const data = await api<LabSession[]>(`/sessions${query}`);
       setSessions(data);
+      // If the currently-selected session is no longer in the filtered list,
+      // reset it to 'all' so the UI doesn't show a phantom selection.
+      if (filterSession !== 'all' && !data.find((s) => s.id === filterSession)) {
+        // Only reset if the URL deep-link isn't active (otherwise we'd
+        // wipe the ?sessionId=X the user just deep-linked to).
+        const urlSessionId = searchParams.get('sessionId');
+        if (urlSessionId !== filterSession) {
+          setFilterSession('all');
+          setPage(0);
+        }
+      }
     } catch (err) {
       console.error('Failed to load sessions', err);
     }
   }
 
+  // ─── Load records whenever any filter or page changes ──
+  useEffect(() => {
+    loadRecords();
+  }, [filterClass, filterSection, filterSession, filterTask, filterVerified, filterAttendance, filterDateFrom, filterDateTo, filterSearch, page]);
+
   async function loadRecords() {
     setLoading(true);
-    setSelectedIds(new Set());
+    // Don't clear selection here — we want it preserved across page loads.
     try {
       const params = new URLSearchParams();
       if (filterClass !== 'all') params.set('class', filterClass);
@@ -104,11 +161,11 @@ export default function RecordsPage() {
       if (filterDateFrom) params.set('dateFrom', filterDateFrom);
       if (filterDateTo) params.set('dateTo', filterDateTo);
       if (filterSearch) params.set('search', filterSearch);
-      params.set('limit', '200');
-      const query = params.toString() ? `?${params.toString()}` : '';
-      const data = await api<LabRecord[]>(`/records${query}`);
-      setRecords(data);
-      setTotalShown(data.length);
+      params.set('limit', String(PAGE_SIZE));
+      params.set('offset', String(page * PAGE_SIZE));
+      const data = await api<PaginatedRecordsResult>(`/records?${params.toString()}`);
+      setRecords(data.records);
+      setTotal(data.total);
     } catch (err) {
       toast.error('Failed to load records');
     } finally {
@@ -134,16 +191,8 @@ export default function RecordsPage() {
     }
   }
 
-  /**
-   * Handle the Verify button click. Toggles Verified ↔ Pending.
-   * When transitioning TO Verified, also auto-fill marks if:
-   *   - the student is NOT absent (absent students are not graded)
-   *   - marks is currently null (preserve manual edits)
-   *   - maxMarks is set
-   */
   async function handleVerify(record: LabRecord) {
     const newVerified = record.verified === 'Verified' ? 'Pending' : 'Verified';
-
     let newMarks = record.marks;
     if (
       newVerified === 'Verified' &&
@@ -153,7 +202,6 @@ export default function RecordsPage() {
     ) {
       newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
     }
-
     setRecords((prev) =>
       prev.map((r) =>
         r.id === record.id
@@ -165,17 +213,14 @@ export default function RecordsPage() {
           : r
       )
     );
-
     try {
       const patchBody: Record<string, unknown> = { verified: newVerified };
       if (newMarks !== record.marks) patchBody.marks = newMarks;
-
       const updated = await api<LabRecord>(`/records/${record.id}`, {
         method: 'PATCH',
         body: patchBody,
       });
       setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
-
       if (newVerified === 'Verified' && newMarks !== record.marks && newMarks !== null) {
         toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
       }
@@ -185,11 +230,6 @@ export default function RecordsPage() {
     }
   }
 
-  /**
-   * Handle attendance dropdown change.
-   * When marking Absent or Bunk, also cascade: taskStatus → 'Not Done',
-   * marks → null. Otherwise just update attendance.
-   */
   async function handleAttendanceChange(record: LabRecord, newAttendance: string) {
     if (isAbsentStatus(newAttendance)) {
       setRecords((prev) =>
@@ -218,14 +258,8 @@ export default function RecordsPage() {
     }
   }
 
-  /**
-   * Handle task-status dropdown change.
-   * Cascade: 'Not Completed' or 'Not Done' → marks = null + verified = 'Pending'.
-   * Other statuses → plain update (preserve marks and verified).
-   */
   async function handleTaskStatusChange(record: LabRecord, newStatus: string) {
     const shouldReset = newStatus === 'Not Completed' || newStatus === 'Not Done';
-
     if (shouldReset) {
       setRecords((prev) =>
         prev.map((r) =>
@@ -269,11 +303,23 @@ export default function RecordsPage() {
   }
 
   function toggleSelectAll() {
-    if (selectedIds.size === records.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(records.map((r) => r.id)));
-    }
+    // Select/deselect only the records on the CURRENT page (selection
+    // from other pages is preserved).
+    const pageIds = new Set(records.map((r) => r.id));
+    const allOnPageSelected = records.length > 0 && records.every((r) => selectedIds.has(r.id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allOnPageSelected) {
+        pageIds.forEach((id) => next.delete(id));
+      } else {
+        pageIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
   }
 
   async function handleBulkByIds() {
@@ -324,29 +370,66 @@ export default function RecordsPage() {
     setFilterDateTo('');
     setFilterSearch('');
     setSearchInput('');
+    setSessionSearch('');
+    setPage(0);
   }
 
-  const hasFilters = filterClass !== 'all' || filterSection !== 'all' || filterSession !== 'all' ||
-    filterTask !== 'all' || filterVerified !== 'all' || filterAttendance !== 'all' ||
-    filterDateFrom || filterDateTo || filterSearch;
+  const hasFilters =
+    filterClass !== 'all' ||
+    filterSection !== 'all' ||
+    filterSession !== 'all' ||
+    filterTask !== 'all' ||
+    filterVerified !== 'all' ||
+    filterAttendance !== 'all' ||
+    filterDateFrom ||
+    filterDateTo ||
+    filterSearch;
 
-  // Get unique materials across visible records
-  const allMaterials = [...new Set(
-    records.flatMap((r) => r.materialsBrought ? Object.keys(r.materialsBrought) : [])
-  )];
+  const allMaterials = useMemo(
+    () => [...new Set(records.flatMap((r) => (r.materialsBrought ? Object.keys(r.materialsBrought) : [])))],
+    [records]
+  );
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const showingFrom = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const showingTo = Math.min((page + 1) * PAGE_SIZE, total);
+
+  // Cascaded session list — already filtered by class+section from the
+  // backend; further filter by the in-dropdown search text.
+  const filteredSessions = useMemo(() => {
+    if (!sessionSearch.trim()) return sessions;
+    const q = sessionSearch.toLowerCase();
+    return sessions.filter((s) =>
+      s.topic.toLowerCase().includes(q) ||
+      (s.activity || '').toLowerCase().includes(q)
+    );
+  }, [sessions, sessionSearch]);
+
+  const allOnPageSelected = records.length > 0 && records.every((r) => selectedIds.has(r.id));
+  const someSelectedOffPage = selectedIds.size > records.filter((r) => selectedIds.has(r.id)).length;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Records</h1>
-          <p className="text-slate-500 mt-1">{totalShown} records</p>
+          <p className="text-slate-500 mt-1">
+            {total} total • showing {showingFrom}–{showingTo}
+            {selectedIds.size > 0 && (
+              <span className="ml-2 text-blue-700 font-medium">• {selectedIds.size} selected</span>
+            )}
+          </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {selectedIds.size > 0 && (
-            <Button variant="outline" size="sm" onClick={() => setBulkDialogOpen(true)}>
-              <Save className="mr-2 h-4 w-4" /> Bulk Update ({selectedIds.size})
-            </Button>
+            <>
+              <Button variant="outline" size="sm" onClick={() => setBulkDialogOpen(true)}>
+                <Save className="mr-2 h-4 w-4" /> Bulk Update ({selectedIds.size})
+              </Button>
+              <Button variant="ghost" size="sm" onClick={clearSelection}>
+                <X className="mr-1 h-3.5 w-3.5" /> Clear selection
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -367,7 +450,15 @@ export default function RecordsPage() {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             <div>
               <Label className="text-xs">Class</Label>
-              <Select value={filterClass} onValueChange={(val) => { setFilterClass(val ?? 'all'); setFilterSection('all'); }}>
+              <Select
+                value={filterClass}
+                onValueChange={(val) => {
+                  setFilterClass(val ?? 'all');
+                  setFilterSection('all');
+                  setFilterSession('all');
+                  setPage(0);
+                }}
+              >
                 <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
@@ -377,7 +468,14 @@ export default function RecordsPage() {
             </div>
             <div>
               <Label className="text-xs">Section</Label>
-              <Select value={filterSection} onValueChange={(val) => setFilterSection(val ?? 'all')}>
+              <Select
+                value={filterSection}
+                onValueChange={(val) => {
+                  setFilterSection(val ?? 'all');
+                  setFilterSession('all');
+                  setPage(0);
+                }}
+              >
                 <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
@@ -385,23 +483,98 @@ export default function RecordsPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
+
+            {/* Session filter — cascaded + searchable popover */}
+            <div className="col-span-2">
               <Label className="text-xs">Session</Label>
-              <Select value={filterSession} onValueChange={(val) => setFilterSession(val ?? 'all')}>
-                <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {sessions.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.class}-{s.section} {format(new Date(s.date), 'dd MMM')}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      className="mt-1 h-8 w-full justify-start text-xs font-normal"
+                    >
+                      {filterSession === 'all' ? (
+                        <span className="text-slate-500">All sessions</span>
+                      ) : (
+                        (() => {
+                          const s = sessions.find((x) => x.id === filterSession);
+                          return s ? (
+                            <span className="truncate">
+                              {s.class}-{s.section} • {format(new Date(s.date), 'dd MMM yy')} • {s.topic}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">All sessions</span>
+                          );
+                        })()
+                      )}
+                    </Button>
+                  }
+                />
+                <PopoverContent className="w-[420px] p-0" align="start">
+                  <div className="p-2 border-b">
+                    <Input
+                      value={sessionSearch}
+                      onChange={(e) => setSessionSearch(e.target.value)}
+                      placeholder="Search session topic..."
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilterSession('all');
+                        setPage(0);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${
+                        filterSession === 'all' ? 'bg-blue-50 text-blue-700 font-medium' : ''
+                      }`}
+                    >
+                      All sessions (no filter)
+                    </button>
+                    {filteredSessions.length === 0 ? (
+                      <div className="px-3 py-4 text-xs text-slate-500 text-center">
+                        No sessions match.
+                        <br />
+                        {filterClass === 'all' && filterSection === 'all'
+                          ? 'Try picking a class first.'
+                          : 'Try a different search.'}
+                      </div>
+                    ) : (
+                      filteredSessions.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => {
+                            setFilterSession(s.id);
+                            setPage(0);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${
+                            filterSession === s.id ? 'bg-blue-50 text-blue-700 font-medium' : ''
+                          }`}
+                        >
+                          <div className="font-medium truncate">{s.topic}</div>
+                          <div className="text-slate-500 mt-0.5">
+                            {s.class}-{s.section} • {format(new Date(s.date), 'dd MMM yyyy')}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  <div className="p-2 border-t text-[10px] text-slate-500">
+                    {filterClass !== 'all' || filterSection !== 'all'
+                      ? `Showing only ${filteredSessions.length} session(s) matching your class/section filters.`
+                      : `${filteredSessions.length} sessions total. Pick a class to narrow down.`}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
+
             <div>
               <Label className="text-xs">Task</Label>
-              <Select value={filterTask} onValueChange={(val) => setFilterTask(val ?? 'all')}>
+              <Select value={filterTask} onValueChange={(val) => { setFilterTask(val ?? 'all'); setPage(0); }}>
                 <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
@@ -411,7 +584,7 @@ export default function RecordsPage() {
             </div>
             <div>
               <Label className="text-xs">Attendance</Label>
-              <Select value={filterAttendance} onValueChange={(val) => setFilterAttendance(val ?? 'all')}>
+              <Select value={filterAttendance} onValueChange={(val) => { setFilterAttendance(val ?? 'all'); setPage(0); }}>
                 <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
@@ -421,7 +594,7 @@ export default function RecordsPage() {
             </div>
             <div>
               <Label className="text-xs">Verified</Label>
-              <Select value={filterVerified} onValueChange={(val) => setFilterVerified(val ?? 'all')}>
+              <Select value={filterVerified} onValueChange={(val) => { setFilterVerified(val ?? 'all'); setPage(0); }}>
                 <SelectTrigger className="mt-1 h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
@@ -431,11 +604,21 @@ export default function RecordsPage() {
             </div>
             <div>
               <Label className="text-xs">From</Label>
-              <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className="mt-1 h-8 text-xs" />
+              <Input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => { setFilterDateFrom(e.target.value); setPage(0); }}
+                className="mt-1 h-8 text-xs"
+              />
             </div>
             <div>
               <Label className="text-xs">To</Label>
-              <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className="mt-1 h-8 text-xs" />
+              <Input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => { setFilterDateTo(e.target.value); setPage(0); }}
+                className="mt-1 h-8 text-xs"
+              />
             </div>
             <div>
               <Label className="text-xs">Search</Label>
@@ -444,10 +627,20 @@ export default function RecordsPage() {
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                   placeholder="Name, ID..."
-                  onKeyDown={(e) => e.key === 'Enter' && setFilterSearch(searchInput)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      setFilterSearch(searchInput);
+                      setPage(0);
+                    }
+                  }}
                   className="h-8 text-xs"
                 />
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" onClick={() => setFilterSearch(searchInput)}>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => { setFilterSearch(searchInput); setPage(0); }}
+                >
                   <Search className="h-3.5 w-3.5" />
                 </Button>
               </div>
@@ -469,7 +662,10 @@ export default function RecordsPage() {
                 <thead>
                   <tr className="border-b bg-slate-50 text-left text-xs text-slate-500">
                     <th className="p-3 font-medium w-10">
-                      <Checkbox checked={selectedIds.size === records.length && records.length > 0} onCheckedChange={toggleSelectAll} />
+                      <Checkbox
+                        checked={allOnPageSelected}
+                        onCheckedChange={toggleSelectAll}
+                      />
                     </th>
                     <th className="p-3 font-medium">Date</th>
                     <th className="p-3 font-medium">Roll</th>
@@ -489,7 +685,7 @@ export default function RecordsPage() {
                   {records.map((record) => (
                     <tr
                       key={record.id}
-                      className={`border-b last:border-0 ${rowClassForStatus(record.taskStatus, record.attendance)}`}
+                      className={`border-b last:border-0 ${rowClassForStatus(record.taskStatus, record.attendance)} ${selectedIds.has(record.id) ? 'ring-1 ring-inset ring-blue-300' : ''}`}
                     >
                       <td className="p-3">
                         <Checkbox checked={selectedIds.has(record.id)} onCheckedChange={() => toggleSelect(record.id)} />
@@ -508,7 +704,9 @@ export default function RecordsPage() {
 
                       {/* Attendance */}
                       <td className="p-3">
-                        <Select value={record.attendance} onValueChange={(val) => { if (val !== null) handleAttendanceChange(record, val); }}>
+                        <Select value={record.attendance} onValueChange={(val) => {
+                          if (val !== null) handleAttendanceChange(record, val);
+                        }}>
                           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {ATTENDANCE_STATUSES.map((s) => (
@@ -522,7 +720,9 @@ export default function RecordsPage() {
 
                       {/* Task */}
                       <td className="p-3">
-                        <Select value={record.taskStatus} onValueChange={(val) => { if (val !== null) handleTaskStatusChange(record, val); }}>
+                        <Select value={record.taskStatus} onValueChange={(val) => {
+                          if (val !== null) handleTaskStatusChange(record, val);
+                        }}>
                           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {TASK_STATUSES.map((s) => (
@@ -571,7 +771,7 @@ export default function RecordsPage() {
                             }}
                             onBlur={(e) => {
                               const val = e.target.value;
-                              handleUpdateRecord(record.id, 'marks', val ==='' ? null : Number(val));
+                              handleUpdateRecord(record.id, 'marks', val === '' ? null : Number(val));
                             }}
                             placeholder="—"
                             className="h-7 text-xs w-12"
@@ -620,13 +820,51 @@ export default function RecordsPage() {
         </CardContent>
       </Card>
 
+      {/* Pagination */}
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Page {page + 1} of {totalPages} • {showingFrom}–{showingTo} of {total}
+            {selectedIds.size > 0 && <span className="ml-2 text-blue-700">• {selectedIds.size} selected</span>}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(Math.max(0, page - 1))}
+              disabled={page === 0 || loading}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
+              disabled={page >= totalPages - 1 || loading}
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {selectedIds.size > 0 && someSelectedOffPage && (
+        <p className="text-xs text-blue-700 text-center">
+          You have {selectedIds.size} records selected across multiple pages. Click "Bulk Update" to apply changes to all of them at once.
+        </p>
+      )}
+
       {/* Bulk Update Dialog */}
       <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Bulk Update</DialogTitle>
             <DialogDescription>
-              {selectedIds.size > 0 ? `Update ${selectedIds.size} selected records` : 'Update all records in this session'}
+              {selectedIds.size > 0
+                ? `Update ${selectedIds.size} selected records (across all pages)`
+                : 'Update all records in this session'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
