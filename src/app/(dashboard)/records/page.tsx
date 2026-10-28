@@ -514,10 +514,10 @@ function RecordsPageInner() {
               <Label className="text-xs">Session</Label>
               <Popover>
                 <PopoverTrigger
-                  type="button"
                   role="combobox"
-                  className="mt-1 flex h-8 w-full items-center justify-start rounded-md border border-input bg-background px-3 text-xs font-normal shadow-sm hover:bg-accent hover:text-accent-foreground"
+                  className="mt-1 flex h-8 w-full items-center justify-start rounded-md border border-input bg-background px-3 py-2 text-xs font-normal shadow-xs hover:bg-accent hover:text-accent-foreground"
                 >
+                  <span className="flex min-w-0 flex-1 items-center">
                     {filterSession === 'all' ? (
                       <span className="text-slate-500">All sessions</span>
                     ) : (
@@ -532,6 +532,7 @@ function RecordsPageInner() {
                         );
                       })()
                     )}
+                  </span>
                 </PopoverTrigger>
                 <PopoverContent className="w-[420px] p-0" align="start">
                   <div className="p-2 border-b">

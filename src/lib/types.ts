@@ -3,6 +3,15 @@ export interface Teacher {
   id: string;
   username: string;
   name: string;
+  /**
+   * The session the teacher is currently marking attendance for.
+   * Set automatically by POST /sessions when a new session is created.
+   * Cleared by DELETE /auth/active-session (called when the teacher clicks
+   * "End Session" on the frontend). Enables cross-device sync — the
+   * frontend reads this from /auth/me on mount and restores the session
+   * even on a different device.
+   */
+  activeSessionId?: string | null;
 }
 
 // Student

@@ -152,17 +152,20 @@ export default function NewSessionPage() {
 
   /**
    * Handle the Verify button click. Toggles Verified ↔ Pending.
-   * When transitioning TO Verified:
-   *   - If the student is NOT absent (absent students are not graded)
-   *   - And maxMarks is set
-   *   - And marks is null (preserve manual edits)
-   *   → auto-fill marks based on task status.
-   * Then ALWAYS (whether marks were just auto-filled or were already set):
-   *   - Apply materials-forgot penalty: if the student has any missing
-   *     material, deduct 10% of maxMarks from their marks.
    *
-   * Per teacher's spec: penalty is one-way — re-toggling a material back
-   * to "brought" does NOT restore the marks.
+   * When transitioning TO Verified:
+   *   - If the student is NOT absent
+   *   - And maxMarks is set
+   *   - And marks is currently NULL (i.e., we're auto-filling for the first time)
+   *   → auto-fill marks based on task status, THEN apply materials penalty.
+   *
+   * If marks already has a value (teacher manually entered it, OR a previous
+   * verify auto-filled it), we DON'T touch marks — just toggle verified.
+   * This prevents the bug where Verify → Pending → Verify keeps deducting
+   * the materials penalty over and over.
+   *
+   * Penalty is one-way: if a material is later toggled back to "brought",
+   * marks are NOT restored. Teacher must re-enter manually if needed.
    */
   async function handleVerify(record: LabRecord) {
     const newVerified = record.verified === 'Verified' ? 'Pending' : 'Verified';
@@ -173,15 +176,14 @@ export default function NewSessionPage() {
     if (
       newVerified === 'Verified' &&
       !isAbsentStatus(record.attendance) &&
-      record.maxMarks
+      record.maxMarks &&
+      record.marks === null  // ← KEY FIX: only auto-fill + penalty when marks is null
     ) {
-      // Step 1: auto-fill if marks is null (preserve manual edits)
-      if (record.marks === null) {
-        newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
-      }
+      // Step 1: auto-fill marks based on task status
+      newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
 
-      // Step 2: apply materials penalty (only on this verify transition,
-      // only if student has at least one missing material).
+      // Step 2: apply materials penalty (only if student has at least one
+      // missing material AND auto-fill produced a positive number).
       if (newMarks !== null && newMarks > 0) {
         const result = applyMaterialsPenalty(
           newMarks,
@@ -221,7 +223,7 @@ export default function NewSessionPage() {
           toast.success(
             `Verified ${record.student?.name || record.studentId}: ${newMarks}/${record.maxMarks} (-${penaltyApplied} materials penalty)`,
           );
-        } else if (record.marks === null) {
+        } else {
           toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
         }
       }
@@ -491,7 +493,7 @@ export default function NewSessionPage() {
 
               {/* Popover to pick roll numbers */}
               <Popover>
-                <PopoverTrigger render={<Button variant="outline" size="sm" />}>
+                <PopoverTrigger className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground">
                   Select Roll Numbers
                 </PopoverTrigger>
                 <PopoverContent className="w-72 p-3" align="start">
