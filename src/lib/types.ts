@@ -95,6 +95,28 @@ export interface RecentSession {
   attendanceRate: number;
 }
 
+// Session with per-session stats — returned by GET /sessions/with-stats
+export interface SessionWithStats {
+  id: string;
+  date: string;
+  class: number;
+  section: string;
+  topic: string;
+  activity: string;
+  learned: string | null;
+  materialsRequired: string | null;
+  teacher: { id: string; name: string; username: string };
+  studentCount: number;
+  presentCount: number;
+  verifiedCount: number;
+  completedCount: number;
+}
+
+export interface SessionsWithStatsResult {
+  sessions: SessionWithStats[];
+  total: number;
+}
+
 // Parent Lookup Result
 export interface ParentLookupResult {
   student: Pick<Student, 'studentId' | 'name' | 'class' | 'section' | 'rollNo'>;

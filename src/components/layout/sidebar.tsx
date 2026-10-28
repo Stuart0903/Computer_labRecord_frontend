@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/stores/auth';
@@ -16,6 +16,7 @@ import {
   Laptop,
   KeyRound,
   Loader2,
+  CalendarDays,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,14 +35,47 @@ import { toast } from 'react-hot-toast';
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/new-session', label: 'New Session', icon: PlusCircle },
+  { href: '/sessions', label: 'Sessions', icon: CalendarDays },
   { href: '/records', label: 'Records', icon: ClipboardList },
   { href: '/students', label: 'Students', icon: Users },
   { href: '/reports', label: 'Reports', icon: BarChart3 },
 ];
 
+/**
+ * Read the active-session localStorage key directly (no React state).
+ * Returns true if there's a non-expired (< 24h) active session.
+ * Called on every render of the sidebar; the sidebar re-renders on
+ * route changes (via usePathname), so the dot stays in sync as the
+ * teacher navigates. We also poll every 5s so it auto-clears if the
+ * 24h timeout hits while the sidebar is open.
+ */
+function hasActiveSession(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = localStorage.getItem('active_lab_session_v1');
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const storedAt = parsed?.storedAt as number | undefined;
+    if (!storedAt) return false;
+    const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    return Date.now() - storedAt < MAX_AGE_MS;
+  } catch {
+    return false;
+  }
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const { teacher, logout } = useAuth();
+
+  // Active-session indicator: re-checks on route change and every 5s
+  // so the dot auto-clears if the 24h timeout hits while the sidebar is open.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 5_000);
+    return () => clearInterval(id);
+  }, []);
+  const sessionActive = hasActiveSession();
 
   // Change password dialog
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -115,7 +149,16 @@ export function Sidebar() {
                 )}
               >
                 <item.icon className="h-4 w-4" />
-                {item.label}
+                <span className="flex-1">{item.label}</span>
+                {/* Active-session indicator on "New Session" */}
+                {item.href === '/new-session' && sessionActive && (
+                  <span
+                    title="A session is currently active — click here to resume marking attendance"
+                    className="inline-flex items-center justify-center"
+                  >
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  </span>
+                )}
               </Link>
             );
           })}

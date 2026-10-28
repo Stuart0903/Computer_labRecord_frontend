@@ -67,6 +67,16 @@ export function useActiveSession() {
     const stored = readStored();
     if (!stored) return;
 
+    // Auto-expire: if the stored session is older than 24 hours, discard it.
+    // This prevents the "I forgot to End Session on Friday" problem from
+    // auto-restoring a stale session on Monday morning.
+    const storedAt = (stored as any).storedAt as number | undefined;
+    const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+    if (storedAt && Date.now() - storedAt > MAX_AGE_MS) {
+      writeStored(null);
+      return;
+    }
+
     setRestoring(true);
     api<LabSession>(`/sessions/${stored.sessionId}`)
       .then((data) => {
@@ -95,8 +105,13 @@ export function useActiveSession() {
         topic: s.topic,
         materialsRequired: s.materialsRequired,
       },
-    });
+      // We also stash the activation timestamp for the 24h auto-expire.
+      storedAt: Date.now(),
+    } as any);
   }, []);
+
+  /** Check if there's an active session (used by sidebar indicator). */
+  const isActive = useCallback(() => sessionId !== null, [sessionId]);
 
   /** End the active session — clears local state + localStorage. */
   const end = useCallback(() => {
@@ -124,5 +139,6 @@ export function useActiveSession() {
     activate,
     end,
     refreshRecords,
+    isActive, // for sidebar indicator
   };
 }
