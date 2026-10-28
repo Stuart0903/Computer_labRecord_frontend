@@ -53,7 +53,7 @@ import {
   VERIFIED_COLORS,
   ATTENDANCE_COLORS,
 } from '@/lib/constants';
-import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks';
+import { autoCalcMarks, isAbsentStatus, rowClassForStatus, applyMaterialsPenalty } from '@/lib/marks';
 import { format } from 'date-fns';
 
 const PAGE_SIZE = 50;
@@ -193,15 +193,33 @@ function RecordsPageInner() {
 
   async function handleVerify(record: LabRecord) {
     const newVerified = record.verified === 'Verified' ? 'Pending' : 'Verified';
+
     let newMarks = record.marks;
+    let penaltyApplied = 0;
+
     if (
       newVerified === 'Verified' &&
-      record.marks === null &&
-      record.maxMarks &&
-      !isAbsentStatus(record.attendance)
+      !isAbsentStatus(record.attendance) &&
+      record.maxMarks
     ) {
-      newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
+      // Step 1: auto-fill if marks is null (preserve manual edits)
+      if (record.marks === null) {
+        newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
+      }
+
+      // Step 2: apply materials penalty (only on this verify transition,
+      // only if student has at least one missing material).
+      if (newMarks !== null && newMarks > 0) {
+        const result = applyMaterialsPenalty(
+          newMarks,
+          record.materialsBrought,
+          record.maxMarks,
+        );
+        newMarks = result.marks;
+        penaltyApplied = result.penaltyApplied;
+      }
     }
+
     setRecords((prev) =>
       prev.map((r) =>
         r.id === record.id
@@ -221,8 +239,15 @@ function RecordsPageInner() {
         body: patchBody,
       });
       setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+
       if (newVerified === 'Verified' && newMarks !== record.marks && newMarks !== null) {
-        toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
+        if (penaltyApplied > 0) {
+          toast.success(
+            `Verified ${record.student?.name || record.studentId}: ${newMarks}/${record.maxMarks} (-${penaltyApplied} materials penalty)`,
+          );
+        } else if (record.marks === null) {
+          toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
+        }
       }
     } catch (err) {
       toast.error('Failed to save');
@@ -489,29 +514,25 @@ function RecordsPageInner() {
               <Label className="text-xs">Session</Label>
               <Popover>
                 <PopoverTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      role="combobox"
-                      className="mt-1 h-8 w-full justify-start text-xs font-normal"
-                    >
-                      {filterSession === 'all' ? (
-                        <span className="text-slate-500">All sessions</span>
-                      ) : (
-                        (() => {
-                          const s = sessions.find((x) => x.id === filterSession);
-                          return s ? (
-                            <span className="truncate">
-                              {s.class}-{s.section} • {format(new Date(s.date), 'dd MMM yy')} • {s.topic}
-                            </span>
-                          ) : (
-                            <span className="text-slate-500">All sessions</span>
-                          );
-                        })()
-                      )}
-                    </Button>
-                  }
-                />
+                  type="button"
+                  role="combobox"
+                  className="mt-1 flex h-8 w-full items-center justify-start rounded-md border border-input bg-background px-3 text-xs font-normal shadow-sm hover:bg-accent hover:text-accent-foreground"
+                >
+                    {filterSession === 'all' ? (
+                      <span className="text-slate-500">All sessions</span>
+                    ) : (
+                      (() => {
+                        const s = sessions.find((x) => x.id === filterSession);
+                        return s ? (
+                          <span className="truncate">
+                            {s.class}-{s.section} • {format(new Date(s.date), 'dd MMM yy')} • {s.topic}
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">All sessions</span>
+                        );
+                      })()
+                    )}
+                </PopoverTrigger>
                 <PopoverContent className="w-[420px] p-0" align="start">
                   <div className="p-2 border-b">
                     <Input

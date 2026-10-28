@@ -53,7 +53,7 @@ import {
   VERIFIED_COLORS,
   ATTENDANCE_COLORS,
 } from '@/lib/constants';
-import { autoCalcMarks, isAbsentStatus, rowClassForStatus } from '@/lib/marks';
+import { autoCalcMarks, isAbsentStatus, rowClassForStatus, applyMaterialsPenalty } from '@/lib/marks';
 import { useActiveSession } from '@/lib/use-active-session';
 import { format } from 'date-fns';
 
@@ -152,22 +152,45 @@ export default function NewSessionPage() {
 
   /**
    * Handle the Verify button click. Toggles Verified ↔ Pending.
-   * When transitioning TO Verified, also auto-fill marks if:
-   *   - the student is NOT absent (absent students are not graded)
-   *   - marks is currently null (preserve manual edits)
-   *   - maxMarks is set
+   * When transitioning TO Verified:
+   *   - If the student is NOT absent (absent students are not graded)
+   *   - And maxMarks is set
+   *   - And marks is null (preserve manual edits)
+   *   → auto-fill marks based on task status.
+   * Then ALWAYS (whether marks were just auto-filled or were already set):
+   *   - Apply materials-forgot penalty: if the student has any missing
+   *     material, deduct 10% of maxMarks from their marks.
+   *
+   * Per teacher's spec: penalty is one-way — re-toggling a material back
+   * to "brought" does NOT restore the marks.
    */
   async function handleVerify(record: LabRecord) {
     const newVerified = record.verified === 'Verified' ? 'Pending' : 'Verified';
 
     let newMarks = record.marks;
+    let penaltyApplied = 0;
+
     if (
       newVerified === 'Verified' &&
-      record.marks === null &&
-      record.maxMarks &&
-      !isAbsentStatus(record.attendance)
+      !isAbsentStatus(record.attendance) &&
+      record.maxMarks
     ) {
-      newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
+      // Step 1: auto-fill if marks is null (preserve manual edits)
+      if (record.marks === null) {
+        newMarks = autoCalcMarks(record.taskStatus, record.maxMarks);
+      }
+
+      // Step 2: apply materials penalty (only on this verify transition,
+      // only if student has at least one missing material).
+      if (newMarks !== null && newMarks > 0) {
+        const result = applyMaterialsPenalty(
+          newMarks,
+          record.materialsBrought,
+          record.maxMarks,
+        );
+        newMarks = result.marks;
+        penaltyApplied = result.penaltyApplied;
+      }
     }
 
     // Optimistic update
@@ -194,7 +217,13 @@ export default function NewSessionPage() {
       setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
 
       if (newVerified === 'Verified' && newMarks !== record.marks && newMarks !== null) {
-        toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
+        if (penaltyApplied > 0) {
+          toast.success(
+            `Verified ${record.student?.name || record.studentId}: ${newMarks}/${record.maxMarks} (-${penaltyApplied} materials penalty)`,
+          );
+        } else if (record.marks === null) {
+          toast.success(`Auto-filled ${newMarks}/${record.maxMarks} for ${record.student?.name || record.studentId}`);
+        }
       }
     } catch (err) {
       toast.error('Failed to save');
@@ -462,7 +491,7 @@ export default function NewSessionPage() {
 
               {/* Popover to pick roll numbers */}
               <Popover>
-                <PopoverTrigger className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50">
+                <PopoverTrigger render={<Button variant="outline" size="sm" />}>
                   Select Roll Numbers
                 </PopoverTrigger>
                 <PopoverContent className="w-72 p-3" align="start">
